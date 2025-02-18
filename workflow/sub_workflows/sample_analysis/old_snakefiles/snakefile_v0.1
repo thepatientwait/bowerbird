@@ -1,0 +1,505 @@
+########
+# init #
+########
+
+import os
+import polars as pl
+
+import pickle
+import hashlib
+
+from typing import List, Dict
+
+#############
+# functions #
+#############
+
+# TODO: remove global var calls inside functions, might be too much of a hassle
+
+class dotdict(dict):
+    """dot.notation access to dictionary attributes"""
+    __getattr__ = dict.get
+    __setattr__ = dict.__setitem__
+    __delattr__ = dict.__delitem__
+
+# cache results
+# necessary to reduce memory consumption on child snakmake processes started on the queue
+
+# global list of cached results
+cached_results = []
+
+def cache_results(cache_dir='cache'):
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            # Ensure the cache directory exists
+            if not os.path.exists(cache_dir):
+                os.makedirs(cache_dir)
+
+            # Generate a unique filename based on the function name and arguments
+            cache_key = f"{func.__name__}_{hashlib.md5(str(args).encode() + str(kwargs).encode()).hexdigest()}.pkl"
+            cache_path = os.path.join(cache_dir, cache_key)
+
+            cached_results.append(cache_path)
+
+            # Check if the result is already cached
+            if os.path.exists(cache_path):
+                with open(cache_path, 'rb') as cache_file:
+                    print(f"Loading cached result from {cache_path}")
+                    return pickle.load(cache_file)
+
+            # Execute the function and cache the result
+            result = func(*args, **kwargs)
+            with open(cache_path, 'wb') as cache_file:
+                pickle.dump(result, cache_file)
+                print(f"Saving result to cache at {cache_path}")
+
+            return result
+        return wrapper
+    return decorator
+
+
+# housekeeping
+def read_file(file_path):
+    if os.path.exists(file_path):
+        with open(file_path, 'r') as file:
+            return file.read().strip()
+    else:
+        raise FileNotFoundError('No previous run!\nPlease run sra_query first.')
+
+
+def get_dir_vars(namespace):
+    return [value for name, value in namespace.items() if name.startswith('DIR_')]
+
+
+def get_sam_run_map(
+    targets:        List[str], 
+    sam_types:      List[str], 
+    all_metadata:   Dict[str, pl.DataFrame],
+    new_metadata:   Dict[str, pl.DataFrame]
+    ) ->            Dict[str, Dict[str, Dict[str, List[str]]]]:
+
+    sam_dict = dict()
+
+    for target in targets: 
+
+        sam_dict[target] = dict()
+
+        for sam in sam_types:
+
+            sam_dict[target][sam] = dict(
+                all_metadata[target]
+                .select(sam, 'acc')
+                .join(new_metadata[target], on=sam, how='semi')
+                .filter(pl.col(sam).is_not_null())
+                .group_by(sam)
+                .all()
+                .iter_rows()
+                )
+
+    return sam_dict
+
+
+def get_bad_sams(
+    targets:        List[str], 
+    sam_types:      List[str],
+    all_metadata:   Dict[str, pl.DataFrame],
+    ) ->            Dict[str, Dict[str, List[str]]]:
+
+    bad_sams = dict()
+
+    for target in targets: 
+
+        bad_sams[target] = dict()
+
+        for sam in sam_types:
+
+            # this is a quick and dirty way to get the bad sams
+            # might need refining + centralising in the future
+            bad_sams[target][sam] = (
+                all_metadata[target]
+                .filter(
+                    (pl.col('acc').n_unique().over(sam) > 50)
+                |   (   (pl.col('acc').n_unique().over(sam) > 2)
+                    &   (pl.col(sam).n_unique().over('bioproject') == 1))
+                    )
+                .select(sam)
+                )
+
+    return bad_sams
+
+
+@cache_results()
+def parse_sams(targets, sam_types, all_metadata, new_metadata):
+
+    all_metadata_dict = dict()
+    new_metadata_dict = dict()
+
+    for target in targets:
+        all_metadata_dict[target] = pl.read_ndjson(all_metadata.format(target=target))
+        new_metadata_dict[target] = pl.read_ndjson(new_metadata.format(target=target))
+
+    sam_dict = get_sam_run_map(targets, sam_types, all_metadata_dict, new_metadata_dict)
+    bad_sams = get_bad_sams(targets, sam_types, all_metadata_dict)
+
+    return sam_dict, bad_sams
+
+
+def splitter(split_lengths, input_filename):
+    chunks = []
+    index = 0
+    for length in split_lengths:
+        if index + length > len(input_filename):
+            break
+        chunks.append(input_filename[index:(index+length)])
+        index = index + length
+    if index < len(input_filename):
+        chunks.append(input_filename[index:])
+    
+    return os.path.join(*chunks)
+
+
+# wildcards
+# TODO: possibly asbstract out the repeated read in of metadata
+@cache_results()
+def get_run_accessions(wildcards, new_metadata):
+    metadata = new_metadata.format(target=wildcards.target)
+
+    acc_list = (
+        pl.scan_ndjson(metadata, low_memory=True)
+        .select('acc')
+        .collect()
+        .drop_nulls()
+        .to_series()
+        .to_list()
+        )
+
+    return acc_list
+
+@cache_results()
+def get_sam_accessions(wildcards, new_metadata, bad_sams):
+    metadata = new_metadata.format(target=wildcards.target)
+
+    acc_list = (
+        pl.scan_ndjson(metadata, low_memory=True)
+        .select(wildcards.sam)
+        .collect()
+        .join(bad_sams[wildcards.target][wildcards.sam], on=wildcards.sam, how='anti')
+        .drop_nulls()
+        .unique()
+        .to_series()
+        .to_list()
+        )
+
+    return acc_list
+
+
+def get_dir_tree(parent_dir, split_lengths, suffix='', acc=None):
+    sub_dirs    = splitter(split_lengths, acc)
+    tree        = os.path.join(parent_dir, sub_dirs)
+    os.makedirs(tree, exist_ok=True)
+    return os.path.join(tree, acc + suffix)
+
+
+def get_tax_run_paths(wildcards):
+    parent_dir = DIR_TAX_RUN.format(target=wildcards.target)
+    dir_list = [
+            get_dir_tree(parent_dir, [3,3,3], TAX_SUFFIX, run_accession) 
+        for run_accession 
+        in  get_run_accessions(wildcards, NEW_METADATA)]
+
+    return dir_list
+
+
+def get_tax_sam_paths(wildcards):
+    parent_dir = DIR_TAX_SAM.format(target=wildcards.target, sam=wildcards.sam)
+    if wildcards.sam == 'biosample':
+        split_lengths = [4,3,3,2]
+    else:
+        split_lengths = [3,3,3]
+    return [
+            get_dir_tree(parent_dir, split_lengths, TAX_SUFFIX, sam_accession) 
+        for sam_accession 
+        in  get_sam_accessions(wildcards, NEW_METADATA, BAD_SAMS)]
+
+
+def get_sam_runs(wildcards):
+    parent_dir = DIR_OTU_RUN.format(target=wildcards.target)
+    return [
+            get_dir_tree(parent_dir, [3,3,3], OTU_SUFFIX, run_accession) 
+        for run_accession 
+        in  SAM_DICT[wildcards.target][wildcards.sam][wildcards.sam_accession]]
+
+
+def get_singletons(wildcards):
+    parent_dir = DIR_TAX_RUN.format(target=wildcards.target)
+    run_tax = [
+            get_dir_tree(parent_dir, [3,3,3], TAX_SUFFIX, run_accession) 
+        for run_accession 
+        in  SAM_DICT[wildcards.target][wildcards.sam][wildcards.sam_accession]]
+
+    return run_tax if len(run_tax) == 1 else []
+
+
+# dynamic resources
+# doubles memory for each retry
+def get_mem_mb(base_mem_mb):
+    def _get_mem_mb(wildcards, attempt): 
+        # doubles memory for each retry
+        return base_mem_mb * (2 ** (attempt - 1))
+    return _get_mem_mb
+
+# extra memory for merge
+# TODO: remove because we are no longer dealing with very large merges
+def get_merge_mem_mb(wildcards, attempt):
+    base_mem_mb_func = get_mem_mb(BASE_MEM_MB)
+    base_mem_mb = base_mem_mb_func(wildcards, attempt)
+
+    n_input = len(get_sam_runs(wildcards))
+
+    mem_mb = int(base_mem_mb + (100 * n_input))
+    return mem_mb
+
+def get_runtime(
+    base_runtime:   str='1d'
+    ) ->            callable:
+    '''Double runtime for each retry'''
+    def _get_runtime(wildcards, attempt):
+        time = int(''.join([char for char in base_runtime if char.isdigit()]))
+        unit = ''.join([char for char in base_runtime if not char.isdigit()])
+        return f'{int(time * attempt)}{unit}'
+    return _get_runtime
+
+@cache_results()
+def number_of_runs(new_metadata, targets):
+    num_runs = 0
+    for target in targets:
+        num_runs += pl.scan_ndjson(new_metadata.format(target=target)).select(pl.len()).collect().item()
+    return num_runs
+
+##########
+# config #
+##########
+
+configfile: "config/base.yaml"
+
+##########
+# inputs #
+##########
+
+# TODO: make sure to sync with sra_query snakefile param
+NEW_METADATA                = config['NEW_METADATA']
+
+if config['ALL_METADATA']  == config['NEW_METADATA']:
+    ALL_METADATA            = config['ALL_METADATA']
+else:
+    LATEST_DATE             = read_file(config['LATEST_DATE_LOG'])
+    ALL_METADATA            = config['ALL_METADATA'].replace('{target}', '{{target}}').format(latest_date=LATEST_DATE)
+
+
+#############
+# variables #
+#############
+
+METAPACKAGE                 = config['METAPACKAGE']
+
+OTU_SUFFIX                  = config['OTU_SUFFIX']
+TAX_SUFFIX                  = config['TAX_SUFFIX']
+
+###########
+# outputs #
+###########
+
+# directories
+DIR_OUTPUT                  = config['DIR_OUTPUT']
+DIR_TARGET                  = os.path.join(DIR_OUTPUT, '{target}')
+DIR_RUNS                    = os.path.join(DIR_TARGET, 'runs')
+
+DIR_OTU                     = os.path.join(DIR_TARGET, 'otu_tables')
+DIR_OTU_RUN                 = os.path.join(DIR_OTU, 'run')
+DIR_OTU_SAM                 = os.path.join(DIR_OTU, '{sam}')
+
+DIR_TAX                     = os.path.join(DIR_TARGET, 'taxonomic_profiles')
+DIR_TAX_RUN                 = os.path.join(DIR_TAX, 'run')
+DIR_TAX_SAM                 = os.path.join(DIR_TAX, '{sam}')
+
+# rule output directories
+RUN_DOWNLOAD                = os.path.join(DIR_RUNS, '{run_tree}', '{run_accession}')
+DONE_RUN_DOWNLOAD           = os.path.join(RUN_DOWNLOAD, '.done')
+
+# files
+
+OTU_RUN                     = os.path.join(DIR_OTU_RUN, '{run_tree}', '{run_accession}' + OTU_SUFFIX)
+OTU_SAM                     = os.path.join(DIR_OTU_SAM, '{sam_tree}', '{sam_accession}' + OTU_SUFFIX)
+
+TAX_RUN                     = os.path.join(DIR_TAX_RUN, '{run_tree}', '{run_accession}' + TAX_SUFFIX)
+TAX_SAM                     = os.path.join(DIR_TAX_SAM, '{sam_tree}', '{sam_accession}' + TAX_SUFFIX)
+
+# log
+DONE_DOWNLOAD               = os.path.join(DIR_TARGET, 'download.done')
+DONE_RUN                    = os.path.join(DIR_TARGET, 'run.done')
+DONE_SAM                    = os.path.join(DIR_TARGET, '{sam}.done')
+
+# cache
+DONE_CACHE                  = os.path.join(DIR_OUTPUT, 'cache.done')
+
+#############
+# wildcards #
+#############
+
+TARGETS                     = config['TARGETS']
+SAM                         = config['SAM']
+
+################
+# housekeeping #
+################
+
+DIR_NAMES                   = expand(get_dir_vars(locals()), target=TARGETS, sam=SAM)
+
+for dir_name in DIR_NAMES:
+    os.makedirs(dir_name, exist_ok=True)
+
+SAM_DICT, BAD_SAMS          = parse_sams(TARGETS, SAM, ALL_METADATA, NEW_METADATA)
+
+#############
+# resources #
+#############
+
+# BASE_MEM_MB = 2000 + int(number_of_runs(NEW_METADATA, TARGETS) / 10) # scaling memory up with number of runs to account for larger DAG
+BASE_MEM_MB = 4000
+BASE_RUNTIME = '1d'
+
+#########
+# rules #
+#########
+
+localrules: all, download_runs, done_run, done_sam, clean_cache
+
+rule all:
+    input:
+        DONE_CACHE
+
+
+# TODO: add a check for previous download
+rule download_runs:
+    output:
+        output_dir       = directory(RUN_DOWNLOAD),
+        done_download    = touch(DONE_RUN_DOWNLOAD)
+    retries: 3
+    threads: 1
+    script:
+        'scripts/download_run.py'
+
+
+rule generate_otu_tables:
+    input:
+        run_dir         = RUN_DOWNLOAD,
+        done_download   = DONE_RUN_DOWNLOAD
+    params:
+        metapackage     = METAPACKAGE
+    output:
+        run_otu_table   = OTU_RUN
+    priority: 10
+    threads: 1
+    retries: 3
+    resources:
+        mem_mb          = get_mem_mb(BASE_MEM_MB),
+        runtime         = get_runtime(BASE_RUNTIME),
+    # benchmark:
+    #     'benchmarks/{target}/generate_otu_tables/run/{run_tree}/{run_accession}.txt'
+    script:
+        'scripts/generate_otu_tables.py'
+
+
+rule merge_otu_tables:
+    input:
+        otu_tables      = get_sam_runs,
+    params:
+        metapackage     = METAPACKAGE
+    output:
+        otu_table       = OTU_SAM
+    priority: 10
+    wildcard_constraints:
+        sam=f"({'|'.join(SAM)})",
+    threads: 1
+    retries: 3
+    resources:
+        mem_mb          = get_merge_mem_mb,
+        runtime         = get_runtime(BASE_RUNTIME),
+    # benchmark:
+    #     'benchmarks/{target}/merge_otu_tables/{sam}/{sam_tree}/{sam_accession}.txt'
+    # localrule: lambda wildcards: len(get_sam_runs(wildcards)) == 1 # this is supposed to conditionally run the rule locally, but it doesn't work
+    script:
+        'scripts/merge_otu_tables.py'
+
+rule assign_taxonomy_run:
+    input:
+        singleton       = [],
+        input_otu       = OTU_RUN
+    params:
+        metapackage     = METAPACKAGE
+    output:
+        tax_profile     = TAX_RUN
+    priority: 10
+    threads: 1
+    retries: 3
+    resources:
+        mem_mb          = get_mem_mb(BASE_MEM_MB),
+        runtime         = get_runtime(BASE_RUNTIME),
+    # benchmark:
+    #     'benchmarks/{target}/assign_taxonomy/run/{run_tree}/{run_accession}.txt'
+    script:
+        'scripts/assign_taxonomy.py'
+
+rule assign_taxonomy_sam:
+    input:
+        singleton       = get_singletons,
+        input_otu       = OTU_SAM
+    params:
+        metapackage     = METAPACKAGE
+    output:
+        tax_profile     = TAX_SAM
+    priority: 10
+    wildcard_constraints:
+        sam=f"({'|'.join(SAM)})",
+    threads: 1
+    retries: 3
+    resources:
+        mem_mb          = get_mem_mb(BASE_MEM_MB),
+        runtime         = get_runtime(BASE_RUNTIME),
+    # benchmark:
+    #     'benchmarks/{target}/assign_taxonomy/{sam}/{sam_tree}/{sam_accession}.txt'
+    # localrule: not bool(get_singletons) # this is supposed to conditionally run the rule locally, but it doesn't work
+    script:
+        'scripts/assign_taxonomy.py'
+
+rule done_run:
+    input:
+        get_tax_run_paths
+    output:
+        DONE_RUN
+    shell:
+        'touch {output[0]}'
+
+rule done_sam:
+    input:
+        get_tax_sam_paths
+    output:
+        DONE_SAM
+    wildcard_constraints:
+        sam=f"({'|'.join(SAM)})",
+    shell:
+        'touch {output[0]}'
+
+rule clean_cache:
+    input:
+        expand(
+            DONE_RUN,
+            target=TARGETS),
+        expand(
+            DONE_SAM,
+            target=TARGETS, sam=SAM),
+    output:
+        touch(DONE_CACHE)
+    run:
+        for cache_path in cached_results:
+            os.remove(cache_path)

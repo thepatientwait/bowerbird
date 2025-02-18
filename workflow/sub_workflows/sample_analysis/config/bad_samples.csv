@@ -1,0 +1,8 @@
+acc,sam_type,reason,study_link
+SAMEA5989477,biosample,only one sample for entire large bioproject; probably ~100*20 samples,https://doi.org/10.1016/j.watres.2024.122204
+SAMN16925175,biosample,only one sample for entire large bioproject; probably ~220*2 samples; replicate runs are identical and can be identified by 'library_name' metadata,https://doi.org/10.3389/fcimb.2021.730091
+SAMN07507533,biosample,only one sample for entire large bioproject; unknown number of samples; appear to be very poor quality according to sandpiper,https://doi.org/10.1167/iovs.61.2.47
+SAMEA104111258,biosample,only one sample for entire large bioproject; probably 10-12 samples; all runs are very similar but different samples can be identified by 'library_name' metadata; exeriment was to isolate neanderthal DNA not microbes,https://doi.org/10.1126/science.aao1887
+SAMN34146950,biosample,only one sample for entire large bioproject; probably ~61 samples; no correlation was seen with 'library_name',https://onlinelibrary.wiley.com/doi/full/10.1111/jgh.16437
+SAMN29272576,biosample,only one sample for entire large bioproject; probably ~15*4*2 samples,https://doi.org/10.1186/s12967-023-03997-9
+SAMN16880838,biosample,same,https://doi.org/10.1016/j.scitotenv.2022.153317

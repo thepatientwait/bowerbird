@@ -1,0 +1,15 @@
+# sample analysis pipeline
+workflow/sub_workflows/sample_analysis/cache/
+workflow/sub_workflows/sample_analysis/sandbox.ipynb
+workflow/sub_workflows/sample_analysis/test/
+workflow/sub_workflows/sample_analysis/update_metadata
+workflow/sub_workflows/sample_analysis/.snakemake/
+
+# sra query pipeline
+workflow/sub_workflows/sra_query/outputs/
+workflow/sub_workflows/sra_query/sandbox.ipynb
+workflow/sub_workflows/sra_query/.snakemake/
+
+# full workflow
+temp/
+.snakemake/

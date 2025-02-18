@@ -1,0 +1,125 @@
+########
+# init #
+########
+
+import datetime
+import os
+
+#############
+# functions #
+#############
+
+def read_file(file_path):
+    if os.path.exists(file_path):
+        with open(file_path, 'r') as file:
+            return file.read().strip()
+    else:
+        return None
+
+##########
+# inputs #
+##########
+
+INPUT_TAXONOMY_QUERY                    = 'sql_queries/taxonomy_query.sql'
+INPUT_METADATA_QUERY                    = 'sql_queries/metadata_query.sql'
+
+
+#############
+# variables #
+#############
+
+OLD_DATE                                = read_file('outputs/last_run')
+NEW_DATE                                = str(datetime.date.today())
+# NEW_DATE                                = '2024-09-20'
+
+###########
+# outputs #
+###########
+
+# directories
+OUTPUT_DIR                              = 'outputs'
+TARGET_DIR                              = os.path.join(OUTPUT_DIR, '{target}_metadata')
+
+# files
+OUTPUT_TAXONOMY_TABLE                   = os.path.join(OUTPUT_DIR, 'taxonomy_table.json')
+
+NEW_METADATA_QUERY                      = os.path.join(TARGET_DIR, 'new.json')
+OUTPUT_METADATA_QUERY                   = os.path.join(TARGET_DIR, '{new_date}.json')
+
+# log
+OUTPUT_DATE                             = os.path.join(OUTPUT_DIR, 'last_run')
+
+
+#############
+# wildcards #
+#############
+
+TARGETS                                 = ['amplicon', 'shotgun', 'nanopore']
+
+################
+# housekeeping #
+################
+
+DIR_NAMES                               = [OUTPUT_DIR] + expand(TARGET_DIR, target=TARGETS)
+
+for dir_name in DIR_NAMES:
+    os.makedirs(dir_name, exist_ok=True)
+
+#########
+# rules #
+#########
+
+
+rule all:
+    input:
+        expand(
+            OUTPUT_METADATA_QUERY,
+            target=TARGETS, new_date=NEW_DATE),
+        OUTPUT_DATE
+
+rule taxonomy_table:
+    input:
+        query       = INPUT_TAXONOMY_QUERY
+    params:
+        new_date    = NEW_DATE,
+    output:
+        json        = OUTPUT_TAXONOMY_TABLE
+    script:
+        "scripts/get_query.py"
+    
+
+rule metadata_query:
+    input:
+        taxonomy    = OUTPUT_TAXONOMY_TABLE,
+        query       = INPUT_METADATA_QUERY
+    params:
+        new_date    = NEW_DATE,
+        old_date    = OLD_DATE,
+        target      = '{target}'
+    output:
+        json        = NEW_METADATA_QUERY
+    script:
+        "scripts/get_query.py"
+
+
+rule merge_metadata:
+    input:
+        new_samples = NEW_METADATA_QUERY,
+    params:
+        old_date    = OLD_DATE,
+    output:
+        json        = OUTPUT_METADATA_QUERY
+    script:
+        "scripts/merge_metadata.py"
+
+
+rule log_date:
+    input:
+        expand(
+            OUTPUT_METADATA_QUERY,
+            target=TARGETS, new_date=NEW_DATE),
+    output:
+        file        = OUTPUT_DATE
+    run:
+        with open(output.file, 'w') as file:
+            file.write(NEW_DATE)

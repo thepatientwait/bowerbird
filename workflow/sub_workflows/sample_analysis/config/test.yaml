@@ -1,0 +1,4 @@
+NEW_METADATA:     'test/input/{target}/test.ndjson'
+ALL_METADATA:     'test/input/{target}/test.ndjson'
+
+DIR_OUTPUT:       'test/output'

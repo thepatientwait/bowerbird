@@ -1,0 +1,209 @@
+########
+# init #
+########
+
+import os
+import shutil
+import polars as pl
+from datetime import datetime
+from random import randint
+
+
+#############
+# functions #
+#############
+
+def get_dir_vars(namespace):
+    return [value for name, value in namespace.items() if name.startswith('DIR_')]
+
+
+def get_chunks(wildcards):
+    chunk_dir           = checkpoints.chunk_metadata.get(**wildcards).output.chunk_dir
+    chunk_path          = CHUNKED_METADATA
+    chunk_wildcards     = glob_wildcards(chunk_path)
+    return expand(SAMPLE_ANALYSIS_DONE, i=chunk_wildcards.i, target=wildcards.target)
+
+
+def get_num_chunks(wildcards):
+    return len(get_chunks(wildcards))
+
+
+def get_local_threads(wildcards):
+    # return int(MAX_SAMPLE_ANALYSIS_LOCAL_THREADS / get_num_chunks(wildcards))
+    return int(MAX_SAMPLE_ANALYSIS_LOCAL_THREADS / workflow.cores)
+
+
+##########
+# config #
+##########
+
+configfile: "../config/base.yaml"
+configfile: "sub_workflows/sample_analysis/config/base.yaml"
+
+##########
+# inputs #
+##########
+
+
+#############
+# variables #
+#############
+
+CHUNK_SIZE = 1000
+# TARGETS = ["amplicon", "shotgun", "nanopore"]
+TARGETS = ["shotgun"]
+
+###########
+# outputs #
+###########
+
+# sra_query
+DIR_SRA_QUERY           = config["DIR_SRA_QUERY"]
+DIR_SRA_QUERY_OUTPUTS   = os.path.join(DIR_SRA_QUERY, "outputs")
+NEW_SRA_QUERY           = os.path.join(DIR_SRA_QUERY_OUTPUTS, "{target}_metadata}", "new.json")
+
+
+# temp
+DIR_TEMP                = "temp"
+
+# metadata
+DIR_METADATA            = os.path.join(DIR_TEMP, "metadata")
+DIR_TARGET_METADATA     = os.path.join(DIR_METADATA, "{target}_metadata")
+NEW_METADATA            = os.path.join(DIR_METADATA, "new.json")
+
+# chunks
+DIR_CHUNKS              = os.path.join(DIR_TEMP, "chunks")
+DIR_CHUNKS_TARGET       = os.path.join(DIR_CHUNKS, "{target}")
+CHUNKED_METADATA        = os.path.join(DIR_CHUNKS_TARGET, "chunk_{i}.csv")
+
+# done
+DIR_DONE                = os.path.join(DIR_TEMP, "done")
+SRA_QUERY_DONE          = os.path.join(DIR_DONE, "sra_query.done")
+
+DIR_DONE_TARGET         = os.path.join(DIR_DONE, "{target}")
+CHUNK_METADATA_DONE     = os.path.join(DIR_DONE_TARGET, "chunk_metadata.done")
+SAMPLE_ANALYSIS_DONE    = os.path.join(DIR_DONE_TARGET, "sample_analysis_{i}.done")
+TARGET_DONE             = os.path.join(DIR_DONE_TARGET, "done")
+
+# log
+DIR_ALL_DONE            = "completed_runs"
+ALL_DONE                = os.path.join(DIR_ALL_DONE, f"{datetime.today().strftime('%Y-%m-%d')}.done")
+
+
+################
+# housekeeping #
+################
+
+DIR_NAMES                   = expand(get_dir_vars(locals()), target=TARGETS)
+
+for dir_name in DIR_NAMES:
+    os.makedirs(dir_name, exist_ok=True)
+
+
+#############
+# resources #
+#############
+
+MAX_SAMPLE_ANALYSIS_LOCAL_THREADS = 50
+
+
+#########
+# rules #
+#########
+
+rule all:
+    input:
+        expand(CHUNK_METADATA_DONE, target=TARGETS),
+        ALL_DONE,
+
+
+if config["METADATA_FILES"]:
+    rule skip_sra_query:
+        output:
+            new_metadata    = NEW_METADATA,
+            done            = touch(SRA_QUERY_DONE),
+        run:
+            # add code to check if the custom config points to a dir or dict
+            for target, metadata in dict(config["METADATA_FILES"]).items():
+                shutil.copy(metadata, NEW_METADATA.format(target=target))
+else:          
+    rule sra_query:
+        output:
+            new_sra_query   = NEW_SRA_QUERY,
+            new_metadata    = NEW_METADATA,
+            done            = touch(SRA_QUERY_DONE),
+        run:
+            shell("snakemake -s sub_workflows/sra_query/snakefile --cores 3")
+            for target in TARGETS:
+                shutil.copy(NEW_SRA_QUERY, NEW_METADATA.format(target=target))
+
+
+# Create chunks of 1000
+checkpoint chunk_metadata:
+    input:
+        metadata    = NEW_METADATA,
+    output:
+        chunk_dir   = directory(DIR_CHUNKS_TARGET),
+        done        = touch(CHUNK_METADATA_DONE),
+    run:
+        if config["METADATA_FILES"]:
+            targets = config["METADATA_FILES"].keys()
+        else:
+            targets = TARGETS
+
+        for target in targets:
+            metadata = (
+                pl
+                .read_ndjson(NEW_METADATA.format(target=target))
+                .select('acc', 'biosample', 'experiment')
+                )
+
+            biosamples = metadata.select("biosample").unique()
+
+            num_rows = biosamples.shape[0]
+            num_chunks = num_rows // CHUNK_SIZE + 1
+
+            for i, chunk in enumerate(biosamples.iter_slices(CHUNK_SIZE)):
+                chunk = chunk.join(metadata, on="biosample", how="inner", coalesce=True)
+                os.makedirs(output.chunk_dir, exist_ok=True)
+                chunk.write_ndjson(CHUNKED_METADATA.format(i=i, target=target))
+
+
+rule sample_analysis:
+    input:
+        CHUNK_METADATA_DONE,
+        DIR_CHUNKS_TARGET,
+        chunked_metadata = os.path.abspath(CHUNKED_METADATA),
+    output:
+        touch(SAMPLE_ANALYSIS_DONE),
+    params:
+        child_threads = get_local_threads
+    threads: 1
+    shell:
+        """
+        snakemake \
+        -s sub_workflows/sample_analysis/snakefile \
+        --profile mysub \
+        --local-cores {params.child_threads} -j 20 \
+        --config NEW_METADATA={input.chunked_metadata} TARGETS=[{wildcards.target}] CHUNK_IND={wildcards.i} \
+        --rerun-incomplete \
+        --quiet host progress \
+        --nolock \
+        --keep-going
+        """
+    # run:
+    #     print(pl.read_ndjson(input.chunked_metadata))
+
+rule target_done:
+    input:
+        get_chunks,
+    output:
+        touch(TARGET_DONE),
+
+rule cleanup:
+    input:
+        expand(TARGET_DONE, target=TARGETS),
+    output:
+        touch(ALL_DONE)
+    run:
+        shutil.rmtree(DIR_TEMP)

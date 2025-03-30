@@ -113,7 +113,6 @@ MAX_SAMPLE_ANALYSIS_LOCAL_THREADS = 50
 
 rule all:
     input:
-        expand(CHUNK_METADATA_DONE, target=TARGETS),
         ALL_DONE,
 
 
@@ -187,9 +186,8 @@ rule sample_analysis:
         --local-cores {params.child_threads} -j 20 \
         --config NEW_METADATA={input.chunked_metadata} TARGETS=[{wildcards.target}] CHUNK_IND={wildcards.i} \
         --rerun-incomplete \
-        --quiet host progress \
         --nolock \
-        --rerun-triggers mtime \
+        --quiet host progress \
         --keep-going
         """
     # run:
@@ -201,10 +199,11 @@ rule target_done:
     output:
         touch(TARGET_DONE),
 
-rule log_failed_accessions:
+# rule log_failed_accessions:
 
 rule cleanup:
     input:
+        expand(CHUNK_METADATA_DONE, target=TARGETS),
         expand(TARGET_DONE, target=TARGETS),
     output:
         touch(ALL_DONE)

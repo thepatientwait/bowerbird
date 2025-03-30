@@ -79,7 +79,10 @@ def check_for_missing_otu_tables(
             error_message = f"Missing {n_missing} out of {len(input_otus)} OTU tables for {accession}."
 
     elif isinstance(input_otus, str) or (isinstance(input_otus, list) and len(input_otus) == 1):
-        input_otu = input_otus
+        if isinstance(input_otus, list):
+            input_otu = input_otus[0]
+        else:
+            input_otu = input_otus
         if not os.path.exists(input_otu):
             error_message = f"OTU table for {input_otu} is missing."
 

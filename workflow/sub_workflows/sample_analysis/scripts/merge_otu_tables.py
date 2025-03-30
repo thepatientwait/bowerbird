@@ -20,7 +20,6 @@ logger      = configure_logger(logger_name)
 # --------------------
 INPUT_DONE              = snakemake.input['input_done']
 INPUT_OTUS              = [done_file.replace('.done', '.json.gz') for done_file in INPUT_DONE]
-print(INPUT_OTUS)
 
 METAPACKAGE             = snakemake.params['metapackage']
 OUTPUT_OTU              = snakemake.params['otu_table']

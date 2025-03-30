@@ -6,6 +6,8 @@ import polars as pl
 import gzip
 import tempfile
 
+from utils import remove_previous_log_files, check_for_previous_output, check_for_missing_otu_tables, fail_if_max_attempts
+
 # logging
 # -------
 from log_config import configure_logger
@@ -18,6 +20,7 @@ logger      = configure_logger(logger_name)
 # --------------------
 INPUT_DONE              = snakemake.input['input_done']
 INPUT_OTUS              = [done_file.replace('.done', '.json.gz') for done_file in INPUT_DONE]
+print(INPUT_OTUS)
 
 METAPACKAGE             = snakemake.params['metapackage']
 OUTPUT_OTU              = snakemake.params['otu_table']
@@ -121,89 +124,23 @@ def merge_otu_tables(
         raise Exception("Error in SingleM command.")
     
 
-def check_for_previous_output(output):
-    """
-    Check if the run_otu_table already exists and is valid.
-    If it does, exit the script.
-    """
-    if os.path.exists(output):
-        # Check if the file is empty
-        if os.path.getsize(output) == 0:
-            logger.info(f"Output {output} exists but is empty. Removing it.")
-            os.remove(output)
-            return
-
-        # Check if the file is corrupted (e.g., invalid gzip format)
-        try:
-            with gzip.open(output, 'rt') as f:
-                f.read(1)  # Attempt to read the first byte
-        except (OSError, gzip.BadGzipFile):
-            logger.info(f"Output {output} exists but is corrupted. Removing it.")
-            os.remove(output)
-            return
-
-        # If the file is valid, exit without error
-        logger.info(f"Output {output} already exists and is valid.")
-        logger.info("Exiting without error.")
-        exit(0)
-    else:
-        return
-    
-
-def check_for_missing_otu_tables(
-    input_otus,
-    output_dir,
-    sam_accession
-    ):
-    
-    n_missing = 0
-    for input_otu in input_otus:
-        if not os.path.exists(input_otu):
-            n_missing += 1
-
-    if n_missing > 0:
-        logger.info(f"Missing {n_missing} out of {len(input_otus)} OTU tables for {sam_accession}.")
-        with open(os.path.join(output_dir, "log"), "w") as f:
-            f.write(f"Missing {n_missing} out of {len(input_otus)} OTU tables for {sam_accession}.")
-        with open(os.path.join(output_dir, "failed"), "w") as f:
-            f.write(f"{sam_accession}\n")
-        logger.info("Logged failed run accession.")
-        logger.info("Exiting without error.")
-        exit(0)
-
-
-def fail_if_max_attempts(
-    attempt,
-    total_attempts,
-    output_dir,
-    accession
-    ):    
-
-    if attempt <= total_attempts:
-        return
-
-    # If max attempts are reached, log failure and exit
-    logger.info("No more attempts! OTU table generation failed.")
-    with open(os.path.join(output_dir, "log"), "w") as f:
-        f.write(f"No more attempts! OTU table generation failed.")
-    with open(os.path.join(output_dir, "failed"), "w") as f:
-        f.write(f"{accession}\n")
-    logger.info("Logged failed accession.")
-    logger.info("Exiting without error.")
-    exit(0)
-        
-
 # main
 def main():
 
     logger.info(f"Merging OTU tables for {SAM_ACCESSION}...")
 
-    # Check if the output file already exists
+    # housekeeping
+    OUTPUT_DIR = os.path.dirname(OUTPUT_OTU)
+
+    # remove previous log files
+    remove_previous_log_files(OUTPUT_DIR)
+    # check if the output file already exists
     check_for_previous_output(OUTPUT_OTU)
     # check for missing OTU tables
-    check_for_missing_otu_tables(INPUT_OTUS, os.path.dirname(OUTPUT_OTU), SAM_ACCESSION)
+    check_for_missing_otu_tables(INPUT_OTUS, OUTPUT_DIR, SAM_ACCESSION)
     # fail if max attempts reached
-    fail_if_max_attempts(ATTEMPT, TOTAL_ATTEMPTS, os.path.dirname(OUTPUT_OTU), SAM_ACCESSION)
+    fail_if_max_attempts(ATTEMPT, TOTAL_ATTEMPTS, OUTPUT_DIR, SAM_ACCESSION)
+   
     
     if len(INPUT_OTUS) == 1:
         logger.info(f"Only one OTU table found for {SAM_ACCESSION}...")

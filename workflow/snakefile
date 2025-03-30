@@ -189,7 +189,7 @@ rule sample_analysis:
         --rerun-incomplete \
         --quiet host progress \
         --nolock \
-        --rerun-triggers mtime
+        --rerun-triggers mtime \
         --keep-going
         """
     # run:

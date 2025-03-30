@@ -4,6 +4,8 @@
 import subprocess
 import gzip
 
+from utils import remove_previous_log_files, check_for_previous_output, check_for_missing_otu_tables, fail_if_max_attempts
+
 # logging
 # -------
 from log_config import configure_logger
@@ -17,7 +19,7 @@ logger      = configure_logger(logger_name)
 SINGLETON               = snakemake.input['singleton']
 
 INPUT_DONE              = snakemake.input['input_done']
-INPUT_OTU               = INPUT_DONE.replace('.done', '.json.gz')
+INPUT_OTU               = INPUT_DONE.replace('.done', '.tsv.gz')
 
 METAPACKAGE             = snakemake.params['metapackage']
 TAX_PROFILE             = snakemake.params['tax_profile']
@@ -88,90 +90,28 @@ def symlink_run_taxonomy(
 
     os.symlink(input_tax_profile, output_tax_profile)
 
-
-def check_for_previous_output(output):
-    """
-    Check if the run_otu_table already exists and is valid.
-    If it does, exit the script.
-    """
-    if os.path.exists(output):
-        # Check if the file is empty
-        if os.path.getsize(output) == 0:
-            logger.info(f"Output {output} exists but is empty. Removing it.")
-            os.remove(output)
-            return
-
-        # Check if the file is corrupted (e.g., invalid gzip format)
-        try:
-            with gzip.open(output, 'rt') as f:
-                f.read(1)  # Attempt to read the first byte
-        except (OSError, gzip.BadGzipFile):
-            logger.info(f"Output {output} exists but is corrupted. Removing it.")
-            os.remove(output)
-            return
-
-        # If the file is valid, exit without error
-        logger.info(f"Output {output} already exists and is valid.")
-        logger.info("Exiting without error.")
-        exit(0)
-    else:
-        return
-    
-    
-def check_for_missing_otu_table(
-    input_otu,
-    output_dir,
-    accession
-    ):
-    
-    if not os.path.exists(input_otu):
-        logger.info(f"OTU table for {input_otu} is missing.")
-        with open(os.path.join(output_dir, "log"), "w") as f:
-            f.write(f"OTU table for {input_otu} is missing.")
-        with open(os.path.join(output_dir, "failed"), "w") as f:
-            f.write(f"{accession}\n")
-        logger.info("Logged failed accession.")
-        logger.info("Exiting without error.")
-        exit(0)
-
-
-def fail_if_max_attempts(
-    attempt,
-    total_attempts,
-    output_dir,
-    accession
-    ):    
-
-    if attempt <= total_attempts:
-        return
-
-    # If max attempts are reached, log failure and exit
-    logger.info("No more attempts! OTU table generation failed.")
-    with open(os.path.join(output_dir, "log"), "w") as f:
-        f.write(f"No more attempts! OTU table generation failed.")
-    with open(os.path.join(output_dir, "failed"), "w") as f:
-        f.write(f"{accession}\n")
-    logger.info("Logged failed run accession.")
-    logger.info("Exiting without error.")
-    exit(0)
-
 # main
 def main():
     
     logger.info(f"Assigning taxonomy for {ACCESSION}...")
 
+    # housekeeping
+    OUTPUT_DIR = os.path.dirname(TAX_PROFILE)
+
+    # remove previous log files
+    remove_previous_log_files(OUTPUT_DIR)
     # check if the output file already exists
     check_for_previous_output(TAX_PROFILE)
     # check for missing OTU tables
-    check_for_missing_otu_table(INPUT_OTU, os.path.dirname(TAX_PROFILE), ACCESSION)
+    check_for_missing_otu_tables(INPUT_OTU, OUTPUT_DIR, ACCESSION)
     # fail if max attempts reached
-    fail_if_max_attempts(ATTEMPT, TOTAL_ATTEMPTS, os.path.dirname(TAX_PROFILE), ACCESSION)
+    fail_if_max_attempts(ATTEMPT, TOTAL_ATTEMPTS, OUTPUT_DIR, ACCESSION)
 
 
     if SINGLETON:
         logger.info(f"Only one run found for {ACCESSION}...")
-        symlink_run_taxonomy(SINGLETON[0], TAX_PROFILE)
-        logger.info(f"Taxonomic profile {SINGLETON} symlinked to {TAX_PROFILE}.")
+        symlink_run_taxonomy(INPUT_OTU, TAX_PROFILE)
+        logger.info(f"Taxonomic profile {INPUT_OTU} symlinked to {TAX_PROFILE}.")
     else:
         if ACC_TYPE == 'sam':
             logger.info(f"Multiple runs found for {ACCESSION}.")

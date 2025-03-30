@@ -121,6 +121,35 @@ def merge_otu_tables(
         raise Exception("Error in SingleM command.")
     
 
+def check_for_previous_output(output):
+    """
+    Check if the run_otu_table already exists and is valid.
+    If it does, exit the script.
+    """
+    if os.path.exists(output):
+        # Check if the file is empty
+        if os.path.getsize(output) == 0:
+            logger.info(f"Output {output} exists but is empty. Removing it.")
+            os.remove(output)
+            return
+
+        # Check if the file is corrupted (e.g., invalid gzip format)
+        try:
+            with gzip.open(output, 'rt') as f:
+                f.read(1)  # Attempt to read the first byte
+        except (OSError, gzip.BadGzipFile):
+            logger.info(f"Output {output} exists but is corrupted. Removing it.")
+            os.remove(output)
+            return
+
+        # If the file is valid, exit without error
+        logger.info(f"Output {output} already exists and is valid.")
+        logger.info("Exiting without error.")
+        exit(0)
+    else:
+        return
+    
+
 def check_for_missing_otu_tables(
     input_otus,
     output_dir,
@@ -169,6 +198,8 @@ def main():
 
     logger.info(f"Merging OTU tables for {SAM_ACCESSION}...")
 
+    # Check if the output file already exists
+    check_for_previous_output(OUTPUT_OTU)
     # check for missing OTU tables
     check_for_missing_otu_tables(INPUT_OTUS, os.path.dirname(OUTPUT_OTU), SAM_ACCESSION)
     # fail if max attempts reached

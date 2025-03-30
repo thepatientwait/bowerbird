@@ -89,24 +89,34 @@ def symlink_run_taxonomy(
     os.symlink(input_tax_profile, output_tax_profile)
 
 
-def check_for_empty_otu_table(
-    input_otu,
-    tax_profile
-    ):
+def check_for_previous_output(output):
+    """
+    Check if the run_otu_table already exists and is valid.
+    If it does, exit the script.
+    """
+    if os.path.exists(output):
+        # Check if the file is empty
+        if os.path.getsize(output) == 0:
+            logger.info(f"Output {output} exists but is empty. Removing it.")
+            os.remove(output)
+            return
 
-    dirpath = os.path.dirname(input_otu)
-    file = os.path.join(dirpath, 'no_reads_found')
+        # Check if the file is corrupted (e.g., invalid gzip format)
+        try:
+            with gzip.open(output, 'rt') as f:
+                f.read(1)  # Attempt to read the first byte
+        except (OSError, gzip.BadGzipFile):
+            logger.info(f"Output {output} exists but is corrupted. Removing it.")
+            os.remove(output)
+            return
 
-    if os.path.exists(file):
-        logger.info("No reads found in the output.")
-        logger.info("Writing empty taxonomic profile...")
-        with gzip.open(tax_profile, 'wt') as f:
-            f.write('sample\tcoverage\ttaxonomy\n') # type: ignore
-
-        return True          
-    
+        # If the file is valid, exit without error
+        logger.info(f"Output {output} already exists and is valid.")
+        logger.info("Exiting without error.")
+        exit(0)
     else:
-        return False  
+        return
+    
     
 def check_for_missing_otu_table(
     input_otu,
@@ -150,17 +160,15 @@ def main():
     
     logger.info(f"Assigning taxonomy for {ACCESSION}...")
 
-    is_empty = check_for_empty_otu_table(INPUT_OTU, TAX_PROFILE)
-
+    # check if the output file already exists
+    check_for_previous_output(TAX_PROFILE)
     # check for missing OTU tables
     check_for_missing_otu_table(INPUT_OTU, os.path.dirname(TAX_PROFILE), ACCESSION)
     # fail if max attempts reached
     fail_if_max_attempts(ATTEMPT, TOTAL_ATTEMPTS, os.path.dirname(TAX_PROFILE), ACCESSION)
 
-    if is_empty:
-        logger.info(f"Taxonomic profile written to {TAX_PROFILE}.")
-        logger.info("Done!")
-    elif SINGLETON:
+
+    if SINGLETON:
         logger.info(f"Only one run found for {ACCESSION}...")
         symlink_run_taxonomy(SINGLETON[0], TAX_PROFILE)
         logger.info(f"Taxonomic profile {SINGLETON} symlinked to {TAX_PROFILE}.")

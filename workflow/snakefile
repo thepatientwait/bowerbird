@@ -78,9 +78,9 @@ CHUNKED_METADATA        = os.path.join(DIR_CHUNKS_TARGET, "chunk_{i}.csv")
 
 # done
 DIR_DONE                = os.path.join(DIR_TEMP, "done")
-SRA_QUERY_DONE          = os.path.join(DIR_DONE, "sra_query.done")
-
 DIR_DONE_TARGET         = os.path.join(DIR_DONE, "{target}")
+
+SRA_QUERY_DONE          = os.path.join(DIR_DONE_TARGET, "sra_query.done")
 CHUNK_METADATA_DONE     = os.path.join(DIR_DONE_TARGET, "chunk_metadata.done")
 SAMPLE_ANALYSIS_DONE    = os.path.join(DIR_DONE_TARGET, "sample_analysis_{i}.done")
 TARGET_DONE             = os.path.join(DIR_DONE_TARGET, "done")
@@ -189,6 +189,7 @@ rule sample_analysis:
         --rerun-incomplete \
         --quiet host progress \
         --nolock \
+        --rerun-triggers mtime
         --keep-going
         """
     # run:

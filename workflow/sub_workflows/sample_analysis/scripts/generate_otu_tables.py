@@ -2,6 +2,7 @@
 # ----
 
 import subprocess
+import gzip
 
 # logging
 # -------
@@ -91,6 +92,36 @@ def run_singlem(
         logger.info("Exiting without error.")
         exit(0)
 
+
+def check_for_previous_output(output):
+    """
+    Check if the run_otu_table already exists and is valid.
+    If it does, exit the script.
+    """
+    if os.path.exists(output):
+        # Check if the file is empty
+        if os.path.getsize(output) == 0:
+            logger.info(f"Output {output} exists but is empty. Removing it.")
+            os.remove(output)
+            return
+
+        # Check if the file is corrupted (e.g., invalid gzip format)
+        try:
+            with gzip.open(output, 'rt') as f:
+                f.read(1)  # Attempt to read the first byte
+        except (OSError, gzip.BadGzipFile):
+            logger.info(f"Output {output} exists but is corrupted. Removing it.")
+            os.remove(output)
+            return
+
+        # If the file is valid, exit without error
+        logger.info(f"Output {output} already exists and is valid.")
+        logger.info("Exiting without error.")
+        exit(0)
+    else:
+        return
+
+
 def fail_if_max_attempts(
     attempt,
     total_attempts,
@@ -116,6 +147,9 @@ def main():
 
     logger.info(f"Analysing run {RUN_ACCESSION}...")
 
+    # Check if the output file already exists
+    check_for_previous_output(RUN_OTU_TABLE)
+    # Check if the input files exist
     fail_if_max_attempts(ATTEMPT, TOTAL_ATTEMPTS, os.path.dirname(RUN_OTU_TABLE), RUN_ACCESSION)
 
     run_path = os.path.join(RUN_DIR, RUN_ACCESSION)

@@ -16,13 +16,16 @@ logger      = configure_logger(logger_name)
 
 # snakefile parameters
 # --------------------
-INPUT_OTUS              = snakemake.input['otu_tables']
+INPUT_DONE              = snakemake.input['input_done']
+INPUT_OTUS              = [done_file.replace('.done', '.json.gz') for done_file in INPUT_DONE]
 
 METAPACKAGE             = snakemake.params['metapackage']
+OUTPUT_OTU              = snakemake.params['otu_table']
+
+ATTEMPT                 = snakemake.resources['attempt']
+TOTAL_ATTEMPTS          = snakemake.resources['total_attempts']
 
 SAM_ACCESSION           = snakemake.wildcards['sam_accession']
-
-OUTPUT_OTU              = snakemake.output['otu_table']
 
 # functions
 # ---------
@@ -116,22 +119,66 @@ def merge_otu_tables(
 
     if output.returncode != 0:
         raise Exception("Error in SingleM command.")
+    
 
+def check_for_missing_otu_tables(
+    input_otus,
+    output_dir,
+    sam_accession
+    ):
+    
+    n_missing = 0
+    for input_otu in input_otus:
+        if not os.path.exists(input_otu):
+            n_missing += 1
+
+    if n_missing > 0:
+        logger.info(f"Missing {n_missing} out of {len(input_otus)} OTU tables for {sam_accession}.")
+        with open(os.path.join(output_dir, "log"), "w") as f:
+            f.write(f"Missing {n_missing} out of {len(input_otus)} OTU tables for {sam_accession}.")
+        with open(os.path.join(output_dir, "failed"), "w") as f:
+            f.write(f"{sam_accession}\n")
+        logger.info("Logged failed run accession.")
+        logger.info("Exiting without error.")
+        exit(0)
+
+
+def fail_if_max_attempts(
+    attempt,
+    total_attempts,
+    output_dir,
+    accession
+    ):    
+
+    if attempt <= total_attempts:
+        return
+
+    # If max attempts are reached, log failure and exit
+    logger.info("No more attempts! OTU table generation failed.")
+    with open(os.path.join(output_dir, "log"), "w") as f:
+        f.write(f"No more attempts! OTU table generation failed.")
+    with open(os.path.join(output_dir, "failed"), "w") as f:
+        f.write(f"{accession}\n")
+    logger.info("Logged failed accession.")
+    logger.info("Exiting without error.")
+    exit(0)
+        
 
 # main
 def main():
 
     logger.info(f"Merging OTU tables for {SAM_ACCESSION}...")
 
-    # check if all otu tables exist (mostly here for if the rule retries)
-    for input_otu in INPUT_OTUS:
-        if not os.path.exists(input_otu):
-            raise Exception(f"OTU table {input_otu} not found.")
+    # check for missing OTU tables
+    check_for_missing_otu_tables(INPUT_OTUS, os.path.dirname(OUTPUT_OTU), SAM_ACCESSION)
+    # fail if max attempts reached
+    fail_if_max_attempts(ATTEMPT, TOTAL_ATTEMPTS, os.path.dirname(OUTPUT_OTU), SAM_ACCESSION)
     
     if len(INPUT_OTUS) == 1:
         logger.info(f"Only one OTU table found for {SAM_ACCESSION}...")
         symlink_otu_table(INPUT_OTUS[0], OUTPUT_OTU)
         logger.info(f"OTU table for {SAM_ACCESSION} symlinked to {OUTPUT_OTU}")
+    
     else:
         logger.info(f"Multiple OTU tables found for {SAM_ACCESSION}...")
         merge_otu_tables(INPUT_OTUS, SAM_ACCESSION, OUTPUT_OTU, METAPACKAGE)

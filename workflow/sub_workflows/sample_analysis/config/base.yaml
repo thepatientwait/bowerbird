@@ -2,7 +2,7 @@ NEW_METADATA:     '../sra_query/outputs/{target}_metadata/new.json'
 ALL_METADATA:     '../sra_query/outputs/{target}_metadata/{latest_date}.json'
 LATEST_DATE_LOG:  '../sra_query/outputs/last_run'
 
-METAPACKAGE:      '/mnt/weka/pkg/cmr/n9985158/singlem-metapackage/S4.3.0.GTDB_r220.metapackage_20240523.smpkg.zb'
+METAPACKAGE:      '/mnt/weka/pkg/cmr/n9985158/{mode}.smpkg'
 
 # OTU_SUFFIX:       '.ndjson.gz'
 OTU_SUFFIX:       '.json.gz'
@@ -14,6 +14,8 @@ DIR_LOG:          'logs'
 
 TARGETS:          ['shotgun'] # make a glob?
 SAM:              ['experiment', 'biosample']
+# MODES:            ['singlem', 'lyrebird']
+MODES:            ['singlem']
 
 # BAD_SAMS:         'config/bad_samples.csv'
 

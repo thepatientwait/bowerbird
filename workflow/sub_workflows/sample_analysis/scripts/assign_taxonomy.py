@@ -15,9 +15,19 @@ logger      = configure_logger(logger_name)
 # snakefile parameters
 # --------------------
 SINGLETON               = snakemake.input['singleton']
-INPUT_OTU               = snakemake.input['input_otu']
+
+INPUT_DONE              = snakemake.input['input_done']
+INPUT_OTU               = INPUT_DONE.replace('.done', '.json.gz')
 
 METAPACKAGE             = snakemake.params['metapackage']
+TAX_PROFILE             = snakemake.params['tax_profile']
+
+MODE                    = snakemake.wildcards['mode']
+if MODE == 'plastic':
+    MODE = 'singlem'
+
+ATTEMPT                 = snakemake.resources['attempt']
+TOTAL_ATTEMPTS          = snakemake.resources['total_attempts']
 
 THREADS                 = snakemake.threads
 
@@ -28,21 +38,25 @@ else:
     ACCESSION           = snakemake.wildcards['run_accession']
     ACC_TYPE            = 'run'
 
-TAX_PROFILE             = snakemake.output['tax_profile']
 
 # functions
 # ---------
-def assign_taxonomy(input_otu, tax_profile, metapackage, threads=1):
+def assign_taxonomy(
+        input_otu, 
+        tax_profile, 
+        mode,
+        metapackage, 
+        threads=1):
     """
     Assigns taxonomy to OTU table based on sample accession.
     """
 
-    cmd = f'singlem renew ' \
+    cmd = f'{mode} renew ' \
         f'--input-archive-otu-table <(gunzip -c {input_otu}) ' \
         f'--taxonomic-profile >(gzip >{tax_profile}) ' \
         f'--metapackage {metapackage} ' \
         f'--threads {threads}'
-    
+        
     logger.info(f"Attempting SingleM command: {cmd}")
     output = subprocess.run(
         ["bash",'-o','pipefail',"-c", cmd],
@@ -68,6 +82,7 @@ def symlink_run_taxonomy(
     input_tax_profile, 
     output_tax_profile
     ):
+
     input_tax_profile       = os.path.abspath(input_tax_profile)
     output_tax_profile      = os.path.abspath(output_tax_profile)
 
@@ -78,6 +93,7 @@ def check_for_empty_otu_table(
     input_otu,
     tax_profile
     ):
+
     dirpath = os.path.dirname(input_otu)
     file = os.path.join(dirpath, 'no_reads_found')
 
@@ -91,6 +107,43 @@ def check_for_empty_otu_table(
     
     else:
         return False  
+    
+def check_for_missing_otu_table(
+    input_otu,
+    output_dir,
+    accession
+    ):
+    
+    if not os.path.exists(input_otu):
+        logger.info(f"OTU table for {input_otu} is missing.")
+        with open(os.path.join(output_dir, "log"), "w") as f:
+            f.write(f"OTU table for {input_otu} is missing.")
+        with open(os.path.join(output_dir, "failed"), "w") as f:
+            f.write(f"{accession}\n")
+        logger.info("Logged failed accession.")
+        logger.info("Exiting without error.")
+        exit(0)
+
+
+def fail_if_max_attempts(
+    attempt,
+    total_attempts,
+    output_dir,
+    accession
+    ):    
+
+    if attempt <= total_attempts:
+        return
+
+    # If max attempts are reached, log failure and exit
+    logger.info("No more attempts! OTU table generation failed.")
+    with open(os.path.join(output_dir, "log"), "w") as f:
+        f.write(f"No more attempts! OTU table generation failed.")
+    with open(os.path.join(output_dir, "failed"), "w") as f:
+        f.write(f"{accession}\n")
+    logger.info("Logged failed run accession.")
+    logger.info("Exiting without error.")
+    exit(0)
 
 # main
 def main():
@@ -98,6 +151,11 @@ def main():
     logger.info(f"Assigning taxonomy for {ACCESSION}...")
 
     is_empty = check_for_empty_otu_table(INPUT_OTU, TAX_PROFILE)
+
+    # check for missing OTU tables
+    check_for_missing_otu_table(INPUT_OTU, os.path.dirname(TAX_PROFILE), ACCESSION)
+    # fail if max attempts reached
+    fail_if_max_attempts(ATTEMPT, TOTAL_ATTEMPTS, os.path.dirname(TAX_PROFILE), ACCESSION)
 
     if is_empty:
         logger.info(f"Taxonomic profile written to {TAX_PROFILE}.")
@@ -111,7 +169,7 @@ def main():
             logger.info(f"Multiple runs found for {ACCESSION}.")
 
         logger.info(f"Assigning taxonomy to OTU table {INPUT_OTU}...")
-        assign_taxonomy(INPUT_OTU, TAX_PROFILE, METAPACKAGE, THREADS)
+        assign_taxonomy(INPUT_OTU, TAX_PROFILE, MODE, METAPACKAGE, THREADS)
         logger.info(f"Taxonomic profile for {ACCESSION} written to {TAX_PROFILE}.")
 
     logger.info("Done!")

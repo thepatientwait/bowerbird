@@ -193,17 +193,17 @@ def get_sam_accessions(wildcards, new_metadata, bad_sams):
     return acc_list
 
 
-def get_dir_tree(parent_dir, split_lengths, suffix='', acc=None):
+def get_dir_tree(parent_dir, split_lengths, acc=None):
     sub_dirs    = splitter(split_lengths, acc)
     tree        = os.path.join(parent_dir, sub_dirs)
     os.makedirs(tree, exist_ok=True)
-    return os.path.join(tree, acc + suffix)
+    return os.path.join(tree, acc + ".done")
 
 
 def get_tax_run_paths(wildcards):
-    parent_dir = DIR_TAX_RUN.format(target=wildcards.target)
+    parent_dir = DIR_TAX_RUN.format(target=wildcards.target, mode=wildcards.mode)
     dir_list = [
-            get_dir_tree(parent_dir, [3,3,3], TAX_SUFFIX, run_accession) 
+            get_dir_tree(parent_dir, [3,3,3], run_accession) 
         for run_accession 
         in  get_run_accessions(wildcards, NEW_METADATA)]
 
@@ -211,29 +211,29 @@ def get_tax_run_paths(wildcards):
 
 
 def get_tax_sam_paths(wildcards):
-    parent_dir = DIR_TAX_SAM.format(target=wildcards.target, sam=wildcards.sam)
+    parent_dir = DIR_TAX_SAM.format(target=wildcards.target, mode=wildcards.mode, sam=wildcards.sam)
     if wildcards.sam == 'biosample':
         split_lengths = [4,3,3,2]
     else:
         split_lengths = [3,3,3]
     return [
-            get_dir_tree(parent_dir, split_lengths, TAX_SUFFIX, sam_accession) 
+            get_dir_tree(parent_dir, split_lengths, sam_accession) 
         for sam_accession 
         in  get_sam_accessions(wildcards, NEW_METADATA, BAD_SAMS)]
 
 
 def get_sam_runs(wildcards):
-    parent_dir = DIR_OTU_RUN.format(target=wildcards.target)
+    parent_dir = DIR_OTU_RUN.format(target=wildcards.target, mode=wildcards.mode)
     return [
-            get_dir_tree(parent_dir, [3,3,3], OTU_SUFFIX, run_accession) 
+            get_dir_tree(parent_dir, [3,3,3], run_accession) 
         for run_accession 
         in  SAM_DICT[wildcards.target][wildcards.sam][wildcards.sam_accession]]
 
 
 def get_singletons(wildcards):
-    parent_dir = DIR_TAX_RUN.format(target=wildcards.target)
+    parent_dir = DIR_TAX_RUN.format(target=wildcards.target, mode=wildcards.mode)
     run_tax = [
-            get_dir_tree(parent_dir, [3,3,3], TAX_SUFFIX, run_accession) 
+            get_dir_tree(parent_dir, [3,3,3], run_accession) 
         for run_accession 
         in  SAM_DICT[wildcards.target][wildcards.sam][wildcards.sam_accession]]
 
@@ -242,39 +242,38 @@ def get_singletons(wildcards):
 
 # dynamic resources
 # doubles memory for each retry
+# except for the final attempt, which is only used for housekeeping
+
 def get_mem_mb(base_mem_mb):
     def _get_mem_mb(wildcards, attempt): 
+        if attempt == TOTAL_ATTEMPTS:
+            return base_mem_mb
         # doubles memory for each retry
         return base_mem_mb * (2 ** (attempt - 1))
     return _get_mem_mb
 
-# extra memory for merge
-# TODO: remove because we are no longer dealing with very large merges
-def get_merge_mem_mb(wildcards, attempt):
-    base_mem_mb_func = get_mem_mb(BASE_MEM_MB)
-    base_mem_mb = base_mem_mb_func(wildcards, attempt)
-
-    n_input = len(get_sam_runs(wildcards))
-
-    mem_mb = int(base_mem_mb + (100 * n_input))
-    return mem_mb
 
 def get_runtime(
-    base_runtime:   str='1d'
+    base_runtime:   str='12h'
     ) ->            callable:
     '''Double runtime for each retry'''
     def _get_runtime(wildcards, attempt):
+        if attempt == TOTAL_ATTEMPTS:
+            return '1h'
         time = int(''.join([char for char in base_runtime if char.isdigit()]))
         unit = ''.join([char for char in base_runtime if not char.isdigit()])
         return f'{int(time * attempt)}{unit}'
     return _get_runtime
 
-@cache_results()
-def number_of_runs(new_metadata, targets):
-    num_runs = 0
-    for target in targets:
-        num_runs += pl.scan_ndjson(new_metadata.format(target=target)).select(pl.len()).collect().item()
-    return num_runs
+def get_attempt(wildcards, attempt):
+    return attempt
+
+# @cache_results()
+# def number_of_runs(new_metadata, targets):
+#     num_runs = 0
+#     for target in targets:
+#         num_runs += pl.scan_ndjson(new_metadata.format(target=target)).select(pl.len()).collect().item()
+#     return num_runs
 
 ##########
 # config #
@@ -302,6 +301,7 @@ else:
 #############
 
 METAPACKAGE                 = config['METAPACKAGE']
+MODES                       = config['MODES']
 
 OTU_SUFFIX                  = config['OTU_SUFFIX']
 TAX_SUFFIX                  = config['TAX_SUFFIX']
@@ -317,11 +317,13 @@ DIR_OUTPUT                  = config['DIR_OUTPUT']
 DIR_TARGET                  = os.path.join(DIR_OUTPUT, '{target}')
 DIR_RUNS                    = os.path.join(DIR_TARGET, 'runs')
 
-DIR_OTU                     = os.path.join(DIR_TARGET, 'otu_tables')
+DIR_MODE                    = os.path.join(DIR_TARGET, '{mode}')
+
+DIR_OTU                     = os.path.join(DIR_MODE, 'otu_tables')
 DIR_OTU_RUN                 = os.path.join(DIR_OTU, 'run')
 DIR_OTU_SAM                 = os.path.join(DIR_OTU, '{sam}')
 
-DIR_TAX                     = os.path.join(DIR_TARGET, 'taxonomic_profiles')
+DIR_TAX                     = os.path.join(DIR_MODE, 'taxonomic_profiles')
 DIR_TAX_RUN                 = os.path.join(DIR_TAX, 'run')
 DIR_TAX_SAM                 = os.path.join(DIR_TAX, '{sam}')
 
@@ -330,18 +332,20 @@ RUN_DOWNLOAD                = os.path.join(DIR_RUNS, '{run_tree}', '{run_accessi
 DONE_RUN_DOWNLOAD           = os.path.join(RUN_DOWNLOAD, '.done')
 
 # files
-
 OTU_RUN                     = os.path.join(DIR_OTU_RUN, '{run_tree}', '{run_accession}' + OTU_SUFFIX)
+DONE_OTU_RUN                = os.path.join(DIR_OTU_RUN, '{run_tree}', '{run_accession}' + '.done')
+
 OTU_SAM                     = os.path.join(DIR_OTU_SAM, '{sam_tree}', '{sam_accession}' + OTU_SUFFIX)
+DONE_OTU_SAM                = os.path.join(DIR_OTU_SAM, '{sam_tree}', '{sam_accession}' + '.done')
 
 TAX_RUN                     = os.path.join(DIR_TAX_RUN, '{run_tree}', '{run_accession}' + TAX_SUFFIX)
+DONE_TAX_RUN                = os.path.join(DIR_TAX_RUN, '{run_tree}', '{run_accession}' + '.done')
+
 TAX_SAM                     = os.path.join(DIR_TAX_SAM, '{sam_tree}', '{sam_accession}' + TAX_SUFFIX)
+DONE_TAX_SAM                = os.path.join(DIR_TAX_SAM, '{sam_tree}', '{sam_accession}' + '.done')
 
 # log
 DIR_LOG                     = config['DIR_LOG']
-UNFINISHED_RUNS             = os.path.join(DIR_LOG, 'unfinished_runs.txt')
-UNFINISHED_SAMS             = os.path.join(DIR_LOG, 'unfinished_sams.txt')
-
 DIR_DONE                    = os.path.join(DIR_LOG, 'done')
 DIR_DONE_TARGET             = os.path.join(DIR_DONE, '{target}')
 
@@ -350,10 +354,10 @@ if CHUNK_IND:
 else:
     DIR_CHUNKS              = DIR_DONE_TARGET
 
-
 DONE_DOWNLOAD               = os.path.join(DIR_CHUNKS, 'download.done')
-DONE_RUN                    = os.path.join(DIR_CHUNKS, 'run.done')
-DONE_SAM                    = os.path.join(DIR_CHUNKS, '{sam}.done')
+DONE_RUN                    = os.path.join(DIR_CHUNKS, '{mode}.run.done')
+DONE_SAM                    = os.path.join(DIR_CHUNKS, '{mode}.{sam}.done')
+LOG_FAILED_ACC              = os.path.join(DIR_CHUNKS, 'failed_accessions.log')
 
 # cache
 if CHUNK_IND:
@@ -372,7 +376,7 @@ SAM                         = config['SAM']
 # housekeeping #
 ################
 
-DIR_NAMES                   = expand(get_dir_vars(locals()), target=TARGETS, sam=SAM)
+DIR_NAMES                   = expand(get_dir_vars(locals()), target=TARGETS, sam=SAM, mode=MODES)
 
 for dir_name in DIR_NAMES:
     os.makedirs(dir_name, exist_ok=True)
@@ -384,9 +388,9 @@ SAM_DICT, BAD_SAMS          = parse_sams(TARGETS, SAM, ALL_METADATA, NEW_METADAT
 # resources #
 #############
 
-# BASE_MEM_MB = 2000 + int(number_of_runs(NEW_METADATA, TARGETS) / 10) # scaling memory up with number of runs to account for larger DAG
 BASE_MEM_MB = 4000
-BASE_RUNTIME = '1d'
+BASE_RUNTIME = '12h'
+TOTAL_ATTEMPTS = 3 # this is indexed from 0, but the final attempt is for housekeeping
 
 #########
 # rules #
@@ -404,7 +408,7 @@ rule download_runs:
     output:
         output_dir       = directory(RUN_DOWNLOAD),
         done_download    = touch(DONE_RUN_DOWNLOAD)
-    retries: 3
+    retries: TOTAL_ATTEMPTS
     threads: 1
     script:
         'scripts/download_run.py'
@@ -415,80 +419,86 @@ rule generate_otu_tables:
         run_dir         = RUN_DOWNLOAD,
         done_download   = DONE_RUN_DOWNLOAD
     params:
-        metapackage     = METAPACKAGE
-    output:
+        # metapackage     = lambda wildcards: METAPACKAGE.format(mode=wildcards.mode),
+        metapackage     = METAPACKAGE,
         run_otu_table   = OTU_RUN
+    output:
+        touch(DONE_OTU_RUN),
     priority: 10
     threads: 1
-    retries: 3
+    retries: TOTAL_ATTEMPTS
     resources:
         mem_mb          = get_mem_mb(BASE_MEM_MB),
         runtime         = get_runtime(BASE_RUNTIME),
-    # benchmark:
-    #     'benchmarks/{target}/generate_otu_tables/run/{run_tree}/{run_accession}.txt'
+        attempt         = get_attempt,
+        total_attempts  = TOTAL_ATTEMPTS,
     script:
         'scripts/generate_otu_tables.py'
 
 
 rule merge_otu_tables:
     input:
-        otu_tables      = get_sam_runs,
+        input_done      = get_sam_runs,
     params:
-        metapackage     = METAPACKAGE
-    output:
+        # metapackage     = lambda wildcards: METAPACKAGE.format(mode=wildcards.mode),
+        metapackage     = METAPACKAGE,
         otu_table       = OTU_SAM
+    output:
+        touch(DONE_OTU_SAM),
     priority: 10
     wildcard_constraints:
         sam=f"({'|'.join(SAM)})",
     threads: 1
-    retries: 3
+    retries: TOTAL_ATTEMPTS
     resources:
-        mem_mb          = get_merge_mem_mb,
+        mem_mb          = get_mem_mb(BASE_MEM_MB),
         runtime         = get_runtime(BASE_RUNTIME),
-    # benchmark:
-    #     'benchmarks/{target}/merge_otu_tables/{sam}/{sam_tree}/{sam_accession}.txt'
-    # localrule: lambda wildcards: len(get_sam_runs(wildcards)) == 1 # this is supposed to conditionally run the rule locally, but it doesn't work
+        attempt         = get_attempt,
+        total_attempts  = TOTAL_ATTEMPTS,
     script:
         'scripts/merge_otu_tables.py'
 
 rule assign_taxonomy_run:
     input:
         singleton       = [],
-        input_otu       = OTU_RUN
+        input_done      = DONE_OTU_RUN
     params:
-        metapackage     = METAPACKAGE
-    output:
+        # metapackage     = lambda wildcards: METAPACKAGE.format(mode=wildcards.mode),
+        metapackage     = METAPACKAGE,
         tax_profile     = TAX_RUN
+    output:
+        touch(DONE_TAX_RUN),
     priority: 10
     threads: 1
-    retries: 3
+    retries: TOTAL_ATTEMPTS
     resources:
         mem_mb          = get_mem_mb(BASE_MEM_MB),
         runtime         = get_runtime(BASE_RUNTIME),
-    # benchmark:
-    #     'benchmarks/{target}/assign_taxonomy/run/{run_tree}/{run_accession}.txt'
+        attempt         = get_attempt,
+        total_attempts  = TOTAL_ATTEMPTS,
     script:
         'scripts/assign_taxonomy.py'
 
 rule assign_taxonomy_sam:
     input:
         singleton       = get_singletons,
-        input_otu       = OTU_SAM
+        input_done      = DONE_OTU_SAM
     params:
-        metapackage     = METAPACKAGE
-    output:
+        # metapackage     = lambda wildcards: METAPACKAGE.format(mode=wildcards.mode),
+        metapackage     = METAPACKAGE,
         tax_profile     = TAX_SAM
+    output:
+        touch(DONE_TAX_SAM),
     priority: 10
     wildcard_constraints:
         sam=f"({'|'.join(SAM)})",
     threads: 1
-    retries: 3
+    retries: TOTAL_ATTEMPTS
     resources:
         mem_mb          = get_mem_mb(BASE_MEM_MB),
         runtime         = get_runtime(BASE_RUNTIME),
-    # benchmark:
-    #     'benchmarks/{target}/assign_taxonomy/{sam}/{sam_tree}/{sam_accession}.txt'
-    # localrule: not bool(get_singletons) # this is supposed to conditionally run the rule locally, but it doesn't work
+        attempt         = get_attempt,
+        total_attempts  = TOTAL_ATTEMPTS,
     script:
         'scripts/assign_taxonomy.py'
 
@@ -497,21 +507,6 @@ rule done_run:
         tax_run_paths   = get_tax_run_paths
     output:
         touch(DONE_RUN)
-    run:
-        unfinished_runs     = [run_path for run_path in input.tax_run_paths if not os.path.exists(run_path)]
-        finished_runs       = [run_path for run_path in input.tax_run_paths if os.path.exists(run_path)]
-
-        unfinished_runs     = [run_path.split('/')[-1].replace(TAX_SUFFIX, '') for run_path in unfinished_runs]
-        finished_runs       = [run_path.split('/')[-1].replace(TAX_SUFFIX, '') for run_path in finished_runs]
-        
-        with open(UNFINISHED_RUNS, 'r') as file:
-            unfinished_runs_prev = file.read().splitlines()
-
-        unfinished_runs = list(set(unfinished_runs_prev + unfinished_runs))
-        unfinished_runs = [run for run in unfinished_runs if run not in finished_runs]
-
-        with open(UNFINISHED_RUNS, 'w') as file:
-            file.write('\n'.join(unfinished_runs))
 
 
 rule done_sam:
@@ -521,32 +516,30 @@ rule done_sam:
         touch(DONE_SAM)
     wildcard_constraints:
         sam=f"({'|'.join(SAM)})",
-    run:
-        unfinished_sams     = [sam_path for sam_path in input.tax_sam_paths if not os.path.exists(sam_path)]
-        finished_sams       = [sam_path for sam_path in input.tax_sam_paths if os.path.exists(sam_path)]
 
-        unfinished_sams     = [sam_path.split('/')[-1].replace(TAX_SUFFIX, '') for sam_path in unfinished_sams]
-        finished_sams       = [sam_path.split('/')[-1].replace(TAX_SUFFIX, '') for sam_path in finished_sams]
-        
-        with open(UNFINISHED_SAMS, 'r') as file:
-            unfinished_sams_prev = file.read().splitlines()
-
-        unfinished_sams = list(set(unfinished_sams_prev + unfinished_sams))
-        unfinished_sams = [sam for sam in unfinished_sams if sam not in finished_sams]
-
-        with open(UNFINISHED_SAMS, 'w') as file:
-            file.write('\n'.join(unfinished_sams))
 
 rule clean_cache:
     input:
         expand(
             DONE_RUN,
-            target=TARGETS),
+            target=TARGETS, mode=MODES),
         expand(
             DONE_SAM,
-            target=TARGETS, sam=SAM),
+            target=TARGETS, sam=SAM, mode=MODES),
     output:
         touch(DONE_CACHE)
     run:
         for cache_path in cached_results:
             os.remove(cache_path)
+
+# rule log_failed_accessions:
+#     input:
+#         expand(
+#             DONE_RUN,
+#             target=TARGETS, mode=MODES),
+#         expand(
+#             DONE_SAM,
+#             target=TARGETS, sam=SAM, mode=MODES),
+#     output:
+#         log_file        = LOG_FAILED_ACC,
+#     run:

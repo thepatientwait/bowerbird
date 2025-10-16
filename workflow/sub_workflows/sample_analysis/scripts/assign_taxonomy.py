@@ -19,7 +19,8 @@ logger      = configure_logger(logger_name)
 SINGLETON               = snakemake.input['singleton']
 
 INPUT_DONE              = snakemake.input['input_done']
-INPUT_OTU               = INPUT_DONE.replace('.done', '.tsv.gz')
+
+INPUT_OTU               = snakemake.params['input_otu']
 
 METAPACKAGE             = snakemake.params['metapackage']
 TAX_PROFILE             = snakemake.params['tax_profile']

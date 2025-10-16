@@ -1,3 +1,5 @@
-METADATA_FILES:  None
+METADATA_FILES:       None
 
 DIR_SRA_QUERY:        'sub_workflows/sra_query'
+
+TARGETS:              ['shotgun']

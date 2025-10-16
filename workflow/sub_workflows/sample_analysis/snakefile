@@ -64,7 +64,7 @@ def read_file(file_path):
         with open(file_path, 'r') as file:
             return file.read().strip()
     else:
-        raise FileNotFoundError('No previous run!\nPlease run sra_query first.')
+        raise FileNotFoundError(f'No file!\nCheck {file_path} exists!')
 
 
 def get_dir_vars(namespace):
@@ -129,14 +129,15 @@ def get_bad_sams(
 
 
 @cache_results()
-def parse_sams(targets, sam_types, all_metadata, new_metadata):
+def parse_sams(targets, sam_types, all_metadata, new_metadata, latest_date_dict):
 
     all_metadata_dict = dict()
     new_metadata_dict = dict()
 
     for target in targets:
-        all_metadata_dict[target] = pl.read_ndjson(all_metadata.format(target=target))
-        new_metadata_dict[target] = pl.read_ndjson(new_metadata.format(target=target))
+        latest_date                 = latest_date_dict[target]
+        all_metadata_dict[target]   = pl.read_ndjson(all_metadata.format(target=target, latest_date=latest_date))
+        new_metadata_dict[target]   = pl.read_ndjson(new_metadata.format(target=target, latest_date=latest_date))
 
     sam_dict = get_sam_run_map(targets, sam_types, all_metadata_dict, new_metadata_dict)
     bad_sams = get_bad_sams(targets, sam_types, all_metadata_dict)
@@ -282,9 +283,17 @@ def get_attempt(wildcards, attempt):
 os.chdir(workflow.basedir)
 configfile: "config/base.yaml"
 
+#############
+# wildcards #
+#############
+
+TARGETS                     = config['TARGETS']
+SAM                         = config['SAM']
+
 ##########
 # inputs #
 ##########
+
 
 # TODO: make sure to sync with sra_query snakefile param
 NEW_METADATA                = config['NEW_METADATA']
@@ -292,8 +301,16 @@ NEW_METADATA                = config['NEW_METADATA']
 if config['ALL_METADATA']  == config['NEW_METADATA']:
     ALL_METADATA            = config['ALL_METADATA']
 else:
-    LATEST_DATE             = read_file(config['LATEST_DATE_LOG'])
-    ALL_METADATA            = config['ALL_METADATA'].replace('{target}', '{{target}}').format(latest_date=LATEST_DATE)
+    LATEST_DATE             = config['LATEST_DATE_LOG']
+    LATEST_DATE_DICT = {}
+    for target in TARGETS:
+        target_date_file = LATEST_DATE.format(target=target)
+        if os.path.exists(target_date_file):
+            LATEST_DATE_DICT[target]           = read_file(target_date_file)
+        else:
+            raise FileNotFoundError(f'Please check sra_query output. {target_date_file} not found!')
+
+    ALL_METADATA            = config['ALL_METADATA']
 
 
 #############
@@ -365,12 +382,6 @@ if CHUNK_IND:
 else:
     DONE_CACHE              = os.path.join(DIR_DONE, 'cache.done')
 
-#############
-# wildcards #
-#############
-
-TARGETS                     = config['TARGETS']
-SAM                         = config['SAM']
 
 ################
 # housekeeping #
@@ -381,7 +392,7 @@ DIR_NAMES                   = expand(get_dir_vars(locals()), target=TARGETS, sam
 for dir_name in DIR_NAMES:
     os.makedirs(dir_name, exist_ok=True)
 
-SAM_DICT, BAD_SAMS          = parse_sams(TARGETS, SAM, ALL_METADATA, NEW_METADATA)
+SAM_DICT, BAD_SAMS          = parse_sams(TARGETS, SAM, ALL_METADATA, NEW_METADATA, LATEST_DATE_DICT)
 
 
 #############
@@ -389,14 +400,14 @@ SAM_DICT, BAD_SAMS          = parse_sams(TARGETS, SAM, ALL_METADATA, NEW_METADAT
 #############
 
 BASE_MEM_MB = 4000
-BASE_RUNTIME = '12h'
+BASE_RUNTIME = '8h'
 TOTAL_ATTEMPTS = 3 # this is indexed from 0, but the final attempt is for housekeeping
 
 #########
 # rules #
 #########
 
-localrules: all, download_runs, done_run, done_sam, clean_cache
+localrules: all, done_run, done_sam, clean_cache
 
 rule all:
     input:
@@ -410,6 +421,9 @@ rule download_runs:
         done_download    = touch(DONE_RUN_DOWNLOAD)
     retries: TOTAL_ATTEMPTS
     threads: 1
+    resources:
+        mem_mb          = get_mem_mb(BASE_MEM_MB),
+        runtime         = get_runtime(BASE_RUNTIME),
     script:
         'scripts/download_run.py'
 
@@ -432,6 +446,7 @@ rule generate_otu_tables:
         runtime         = get_runtime(BASE_RUNTIME),
         attempt         = get_attempt,
         total_attempts  = TOTAL_ATTEMPTS,
+    group: 'run'
     script:
         'scripts/generate_otu_tables.py'
 
@@ -455,6 +470,7 @@ rule merge_otu_tables:
         runtime         = get_runtime(BASE_RUNTIME),
         attempt         = get_attempt,
         total_attempts  = TOTAL_ATTEMPTS,
+    group: 'sam'
     script:
         'scripts/merge_otu_tables.py'
 
@@ -464,6 +480,7 @@ rule assign_taxonomy_run:
         input_done      = DONE_OTU_RUN
     params:
         # metapackage     = lambda wildcards: METAPACKAGE.format(mode=wildcards.mode),
+        input_otu       = OTU_RUN,
         metapackage     = METAPACKAGE,
         tax_profile     = TAX_RUN
     output:
@@ -476,6 +493,7 @@ rule assign_taxonomy_run:
         runtime         = get_runtime(BASE_RUNTIME),
         attempt         = get_attempt,
         total_attempts  = TOTAL_ATTEMPTS,
+    group: 'run'
     script:
         'scripts/assign_taxonomy.py'
 
@@ -485,6 +503,7 @@ rule assign_taxonomy_sam:
         input_done      = DONE_OTU_SAM
     params:
         # metapackage     = lambda wildcards: METAPACKAGE.format(mode=wildcards.mode),
+        input_otu       = OTU_SAM,
         metapackage     = METAPACKAGE,
         tax_profile     = TAX_SAM
     output:
@@ -499,6 +518,7 @@ rule assign_taxonomy_sam:
         runtime         = get_runtime(BASE_RUNTIME),
         attempt         = get_attempt,
         total_attempts  = TOTAL_ATTEMPTS,
+    group: 'sam'
     script:
         'scripts/assign_taxonomy.py'
 

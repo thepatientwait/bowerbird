@@ -42,6 +42,13 @@ def symlink_otu_table(
     os.symlink(input_otu, output_otu)
 
 
+def relative_symlink(src, dst):
+    dir = os.path.dirname(dst)
+    src = os.path.relpath(src, dir)
+    print(f"Creating symlink from {src} to {dst}")
+    # return os.symlink(src, dst)
+
+
 def remove_empty_otu_tables(
     input_otus
     ):

@@ -13,7 +13,7 @@ logger      = configure_logger(logger_name)
 # --------------------
 NEW_SAMPLES                 = snakemake.input['new_samples']
 
-OLD_DATE                    = snakemake.params['old_date']
+OLD_DATE                    = snakemake.params['old_metadata']
 
 TARGET                      = snakemake.wildcards['target']
 NEW_DATE                    = snakemake.wildcards['new_date']

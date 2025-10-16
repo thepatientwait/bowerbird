@@ -23,6 +23,7 @@ if QUERY == 'sql_queries/metadata_query.sql':
     TARGET                  = snakemake.params['target']
 
 
+
 # define sql queries
 # ------------------
 
@@ -31,10 +32,13 @@ with open(QUERY, 'r') as file:
 
 if QUERY == 'sql_queries/metadata_query.sql':
 
-    start_date_filter = f"""
-        AND releasedate < '{NEW_DATE}'"""
+    start_date_filter = ""
 
-    if OLD_DATE:
+    if NEW_DATE is not None:
+        start_date_filter = f"""
+            AND releasedate < '{NEW_DATE}'"""
+
+    if OLD_DATE is not None:
         start_date_filter += f"""
             AND releasedate >= '{OLD_DATE}'"""    
 

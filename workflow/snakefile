@@ -5,7 +5,8 @@
 import os
 import shutil
 import polars as pl
-from datetime import datetime
+
+from datetime import date, datetime, timedelta
 from random import randint
 
 
@@ -33,6 +34,14 @@ def get_local_threads(wildcards):
     return int(MAX_SAMPLE_ANALYSIS_LOCAL_THREADS / workflow.cores)
 
 
+def read_file(file_path):
+    if os.path.exists(file_path):
+        with open(file_path, 'r') as file:
+            return file.read().strip()
+    else:
+        return None
+
+
 ##########
 # config #
 ##########
@@ -40,10 +49,41 @@ def get_local_threads(wildcards):
 configfile: "../config/base.yaml"
 configfile: "sub_workflows/sample_analysis/config/base.yaml"
 
+
+if config['END_DATE']:
+    END_DATE = config['END_DATE']
+else:
+    END_DATE = None
+
+if config['START_DATE']:
+    START_DATE = config['START_DATE']
+else:
+    START_DATE = None
+
+
+#############
+# wildcards #
+#############
+
+TARGETS                     = config['TARGETS']
+
 ##########
 # inputs #
 ##########
 
+# sra_query
+DIR_SRA_QUERY           = config["DIR_SRA_QUERY"]
+DIR_SRA_QUERY_OUTPUTS   = os.path.join(DIR_SRA_QUERY, "outputs")
+NEW_SRA_QUERY           = os.path.join(DIR_SRA_QUERY_OUTPUTS, "{target}_metadata", "new.json")
+
+SRA_QUERY_LAST_RUN      = os.path.join(DIR_SRA_QUERY_OUTPUTS, "last_run")
+
+if config['METADATA_FILES'] != 'None':
+    METADATA_FILES = dict(config["METADATA_FILES"]).items()
+elif read_file(SRA_QUERY_LAST_RUN) == str(date.today()):
+    METADATA_FILES = {target: NEW_SRA_QUERY.format(target=target) for target in TARGETS}
+else:
+    METADATA_FILES  = None
 
 #############
 # variables #
@@ -56,11 +96,6 @@ TARGETS = ["shotgun"]
 ###########
 # outputs #
 ###########
-
-# sra_query
-DIR_SRA_QUERY           = config["DIR_SRA_QUERY"]
-DIR_SRA_QUERY_OUTPUTS   = os.path.join(DIR_SRA_QUERY, "outputs")
-NEW_SRA_QUERY           = os.path.join(DIR_SRA_QUERY_OUTPUTS, "{target}_metadata}", "new.json")
 
 
 # temp
@@ -100,6 +135,33 @@ for dir_name in DIR_NAMES:
     os.makedirs(dir_name, exist_ok=True)
 
 
+# TODO: maybe finish this check for previous metadata
+# # check if requested dates are already in the metadata files
+# if METADATA_FILES:
+#     selected_metadata = None
+#     for target, metadata in METADATA_FILES:
+#         if os.path.exists(metadata):
+#             old_metadata = pl.read_ndjson(metadata)
+
+#             dates = old_metadata['releasedate'].str.strptime(pl.Date, '%Y-%m-%dT%H:%M:%S%z')
+
+#             oldest = dates.min()
+#             newest = dates.max()
+
+#             start_date  = datetime.strptime(START_DATE, '%Y-%m-%d').date()
+#             end_date    = datetime.strptime(END_DATE, '%Y-%m-%d').date() - timedelta(days=1)
+
+#             if oldest <= start_date \
+#                 and newest >= end_date:
+
+#                 selected_metadata = (
+#                     old_metadata.filter(
+#                     (pl.col('releasedate').str.strptime(pl.Date, '%Y-%m-%dT%H:%M:%S%z') >= start_date) &
+#                     (pl.col('releasedate').str.strptime(pl.Date, '%Y-%m-%dT%H:%M:%S%z') <= end_date)
+#                     ))
+            
+
+
 #############
 # resources #
 #############
@@ -116,25 +178,45 @@ rule all:
         ALL_DONE,
 
 
-if config["METADATA_FILES"]:
+if METADATA_FILES:
     rule skip_sra_query:
         output:
             new_metadata    = NEW_METADATA,
             done            = touch(SRA_QUERY_DONE),
         run:
             # add code to check if the custom config points to a dir or dict
-            for target, metadata in dict(config["METADATA_FILES"]).items():
+
+            for target, metadata in METADATA_FILES.items():
                 shutil.copy(metadata, NEW_METADATA.format(target=target))
+
+# elif selected_metadata:
+#     rule skip_sra_query:
+#         output:
+#             new_metadata    = NEW_METADATA,
+#             done            = touch(SRA_QUERY_DONE),
+#         run:
+#             # add code to check if the custom config points to a dir or dict
+
+#             selected_metadata.write_ndjson(NEW_METADATA.format(target=target))
+
 else:          
     rule sra_query:
         output:
             new_sra_query   = NEW_SRA_QUERY,
             new_metadata    = NEW_METADATA,
             done            = touch(SRA_QUERY_DONE),
+        params:
+            end_date        = END_DATE,
+            start_date      = START_DATE,
         run:
-            shell("snakemake -s sub_workflows/sra_query/snakefile --cores 3")
+            if params.end_date and params.start_date:
+                args = f"--config END_DATE={params.end_date} START_DATE={params.start_date}"
+                shell(f"snakemake -s sub_workflows/sra_query/snakefile --cores 3 {args}")
+            else:
+                shell(f"snakemake -s sub_workflows/sra_query/snakefile --cores 3")
+
             for target in TARGETS:
-                shutil.copy(NEW_SRA_QUERY, NEW_METADATA.format(target=target))
+                shutil.copy(NEW_SRA_QUERY.format(target=target), NEW_METADATA.format(target=target))
 
 
 # Create chunks of 1000
@@ -145,8 +227,8 @@ checkpoint chunk_metadata:
         chunk_dir   = directory(DIR_CHUNKS_TARGET),
         done        = touch(CHUNK_METADATA_DONE),
     run:
-        if config["METADATA_FILES"]:
-            targets = config["METADATA_FILES"].keys()
+        if METADATA_FILES:
+            targets = METADATA_FILES.keys()
         else:
             targets = TARGETS
 
@@ -182,12 +264,12 @@ rule sample_analysis:
         """
         snakemake \
         -s sub_workflows/sample_analysis/snakefile \
-        --profile mysub \
-        --local-cores {params.child_threads} -j 20 \
+        --profile aqua \
+        --local-cores {params.child_threads} -j 200 \
         --config NEW_METADATA={input.chunked_metadata} TARGETS=[{wildcards.target}] CHUNK_IND={wildcards.i} \
         --rerun-incomplete \
         --nolock \
-        --quiet host progress \
+        --quiet host \
         --keep-going
         """
     # run:
@@ -206,6 +288,19 @@ rule cleanup:
         expand(CHUNK_METADATA_DONE, target=TARGETS),
         expand(TARGET_DONE, target=TARGETS),
     output:
-        touch(ALL_DONE)
+        touch(ALL_DONE),
+        # touch(CLEAN_DONE)
     run:
         shutil.rmtree(DIR_TEMP)
+
+
+# rule log:
+#     output:
+#         ALL_DONE,
+#     run:
+#         with open(ALL_DONE, 'w') as f:
+#             f.write(f"All done on {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+#             f.write(f"Run on date range: {config['START_DATE']} to {config['END_DATE']}\n")
+#             f.write(f"Total targets: {len(TARGETS)}\n")
+#             f.write(f"Total chunks: {get_num_chunks(wildcards)}\n")
+#             f.write(f"Total sample analyses: {len(get_chunks(wildcards))}\n")

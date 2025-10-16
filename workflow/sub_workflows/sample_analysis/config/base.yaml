@@ -1,6 +1,6 @@
 NEW_METADATA:     '../sra_query/outputs/{target}_metadata/new.json'
 ALL_METADATA:     '../sra_query/outputs/{target}_metadata/{latest_date}.json'
-LATEST_DATE_LOG:  '../sra_query/outputs/last_run'
+LATEST_DATE_LOG:  '../sra_query/outputs/{target}_metadata/last_run'
 
 METAPACKAGE:      '/mnt/weka/pkg/cmr/n9985158/{mode}.smpkg'
 

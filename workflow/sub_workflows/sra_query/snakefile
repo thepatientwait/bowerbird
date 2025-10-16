@@ -17,6 +17,24 @@ def read_file(file_path):
         return None
 
 ##########
+# config #
+##########
+
+os.chdir(workflow.basedir)
+
+configfile: 'config/base.yaml'
+
+if os.path.exists('../../../config/base.yaml'):
+    configfile: '../../../config/base.yaml'
+
+
+#############
+# wildcards #
+#############
+
+TARGETS                                 = config['TARGETS']
+
+##########
 # inputs #
 ##########
 
@@ -24,13 +42,6 @@ INPUT_TAXONOMY_QUERY                    = 'sql_queries/taxonomy_query.sql'
 INPUT_METADATA_QUERY                    = 'sql_queries/metadata_query.sql'
 
 
-#############
-# variables #
-#############
-
-OLD_DATE                                = read_file('outputs/last_run')
-NEW_DATE                                = str(datetime.date.today())
-# NEW_DATE                                = '2024-09-20'
 
 ###########
 # outputs #
@@ -47,14 +58,33 @@ NEW_METADATA_QUERY                      = os.path.join(TARGET_DIR, 'new.json')
 OUTPUT_METADATA_QUERY                   = os.path.join(TARGET_DIR, '{new_date}.json')
 
 # log
-OUTPUT_DATE                             = os.path.join(OUTPUT_DIR, 'last_run')
+OUTPUT_DATE                             = os.path.join(TARGET_DIR, 'last_run')
 
 
 #############
-# wildcards #
+# variables #
 #############
 
-TARGETS                                 = ['amplicon', 'shotgun', 'nanopore']
+OLD_METADATA_DICT = {}
+
+for target in TARGETS:
+    if os.path.exists(OUTPUT_DATE.format(target=target)):
+        OLD_METADATA_DICT[target]           = read_file(OUTPUT_DATE.format(target=target))
+    else:
+        OLD_METADATA_DICT[target]           = None
+
+if config['START_DATE'] != 'None':
+    OLD_DATE                                = config['START_DATE']
+else:
+    OLD_DATE                                = str(datetime.date.today())
+
+if config['END_DATE'] != 'None':
+    NEW_DATE                                = config['END_DATE']
+else:
+    NEW_DATE                                = str(datetime.date.today())
+# NEW_DATE                                = '2024-09-20'
+
+
 
 ################
 # housekeeping #
@@ -75,7 +105,12 @@ rule all:
         expand(
             OUTPUT_METADATA_QUERY,
             target=TARGETS, new_date=NEW_DATE),
-        OUTPUT_DATE
+        expand(
+            NEW_METADATA_QUERY,
+            target=TARGETS),
+        expand(
+            OUTPUT_DATE,
+            target=TARGETS),
 
 rule taxonomy_table:
     input:
@@ -104,11 +139,11 @@ rule metadata_query:
 
 rule merge_metadata:
     input:
-        new_samples = NEW_METADATA_QUERY,
+        new_samples     = NEW_METADATA_QUERY,
     params:
-        old_date    = OLD_DATE,
+        old_metadata    = lambda wildcards: OLD_METADATA_DICT[wildcards.target],
     output:
-        json        = OUTPUT_METADATA_QUERY
+        json            = OUTPUT_METADATA_QUERY
     script:
         "scripts/merge_metadata.py"
 
@@ -117,7 +152,7 @@ rule log_date:
     input:
         expand(
             OUTPUT_METADATA_QUERY,
-            target=TARGETS, new_date=NEW_DATE),
+            new_date=NEW_DATE, allow_missing=True),
     output:
         file        = OUTPUT_DATE
     run:

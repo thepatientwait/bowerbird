@@ -8,12 +8,14 @@ SELECT
     assay_type,
     releasedate,
     collection_date_sam,
+    geo_loc_name_country_calc,
+    geo_loc_name_country_continent_calc,
+    geo_loc_name_sam,
     organism,
     libraryselection,
     librarysource,
     sra_study,
-    avgspotlen,
-    attributes
+    avgspotlen
 FROM
     `nih-sra-datastore.sra.metadata`
 WHERE

@@ -31,11 +31,18 @@ def download_run(
     threads
     ):
 
+    # cmd = f'kingfisher get ' \
+    #     f'-r {run_accession} ' \
+    #     f'--output-directory {output_dir} ' \
+    #     f'--download-threads {threads} ' \
+    #     f'--extraction-threads {threads} ' \
+    #     f'--output-format-possibilities fastq.gz --hide-download-progress ' \
+    #     f'-m ena-ascp ena-ftp prefetch aws-http aws-cp'
+
     cmd = f'kingfisher get ' \
         f'-r {run_accession} ' \
         f'--output-directory {output_dir} ' \
-        f'--download-threads {threads} ' \
-        f'--extraction-threads {threads} ' \
+        f'--hide-download-progress ' \
         f'--output-format-possibilities fastq.gz --hide-download-progress ' \
         f'-m ena-ascp ena-ftp prefetch aws-http aws-cp'
 
